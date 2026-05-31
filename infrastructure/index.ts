@@ -1,4 +1,5 @@
 import * as pulumi from '@pulumi/pulumi';
+import * as cache from '@pulumi/azure-native/redis';
 import * as resources from '@pulumi/azure-native/resources';
 import * as containerregistry from '@pulumi/azure-native/containerregistry';
 import * as dockerBuild from '@pulumi/docker-build';
@@ -23,6 +24,32 @@ const memory = config.requireNumber('memory');
 // ==========================================
 // Create a resource group (Hyphens are allowed here)
 const resourceGroup = new resources.ResourceGroup(`${prefixName}-rg`);
+
+const redis = new cache.Redis(`${prefixName}-redis`, {
+  name: `${prefixName}-weather-cache`,
+  location: 'westus3',
+  resourceGroupName: resourceGroup.name,
+  enableNonSslPort: true,
+  redisVersion: 'Latest',
+  minimumTlsVersion: '1.2',
+  redisConfiguration: {
+    maxmemoryPolicy: 'allkeys-lru',
+  },
+  sku: {
+    name: 'Basic',
+    family: 'C',
+    capacity: 0,
+  },
+});
+
+const redisAccessKey = cache
+  .listRedisKeysOutput({
+    name: redis.name,
+    resourceGroupName: resourceGroup.name,
+  })
+  .apply((keys) => keys.primaryKey);
+
+const redisConnectionString = pulumi.interpolate`rediss://:${redisAccessKey}@${redis.hostName}:${redis.sslPort}`;
 
 // Clean the prefix name by removing all hyphens so Azure accepts it for the ACR
 const cleanAcrName = prefixName.replace(/-/g, '');
@@ -102,6 +129,10 @@ const containerGroup = new containerinstance.ContainerGroup(
           {
             name: 'WEATHER_API_KEY',
             value: config.requireSecret('weatherApiKey')
+          },
+          {
+            name: 'REDIS_URL',
+            value: redisConnectionString,
           },
         ],
         resources: {
